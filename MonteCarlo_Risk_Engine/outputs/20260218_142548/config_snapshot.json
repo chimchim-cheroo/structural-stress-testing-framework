@@ -1,0 +1,47 @@
+{
+  "seed": 42,
+  "sim": {
+    "N": 10000,
+    "H": 60
+  },
+  "portfolio": {
+    "notional": 100000000,
+    "annual_coupon_rate": 0.09,
+    "upfront_fee_rate": 0.01
+  },
+  "funding": {
+    "funding_ratio": 0.8,
+    "base_funding_rate": 0.04,
+    "funding_spread": 0.02
+  },
+  "opex": {
+    "annual_opex_rate": 0.01
+  },
+  "risk_engine": {
+    "rho_default": 0.4,
+    "rho_lgd": 0.3,
+    "rho_margin": 0.5,
+    "default_rate": {
+      "base": 0.05,
+      "shock_coef": 0.03,
+      "clip_min": 0.01,
+      "clip_max": 0.2
+    },
+    "lgd": {
+      "base": 0.4,
+      "shock_coef": 0.2,
+      "clip_min": 0.2,
+      "clip_max": 0.9
+    },
+    "margin_shock": {
+      "shock_coef": 0.02,
+      "clip_min": -0.03,
+      "clip_max": 0.03
+    }
+  },
+  "results_summary": {
+    "expected_total_net_income": 5594930.506127255,
+    "p5_total_net_income": -21721927.70163246,
+    "probability_of_loss": 0.3363
+  }
+}

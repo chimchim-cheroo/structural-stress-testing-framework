@@ -1,0 +1,288 @@
+import os
+import json
+from datetime import datetime
+
+import matplotlib.pyplot as plt
+
+def make_run_dir(base_dir="outputs"):
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(base_dir, run_id)
+    fig_dir = os.path.join(out_dir, "figures")
+    os.makedirs(fig_dir, exist_ok=True)
+    return run_id, out_dir, fig_dir
+
+def _savefig(path):
+    plt.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+def plot_dist_total_net_income(df_base, fig_dir):
+    path = os.path.join(fig_dir, "dist_total_net_income.png")
+    plt.figure()
+    plt.hist(df_base["total_net_income"], bins=50)
+    plt.title("Distribution of Total Net Income")
+    plt.xlabel("Total Net Income")
+    plt.ylabel("Frequency")
+    _savefig(path)
+    return path
+
+def plot_sensitivity(df_base, fig_dir):
+    corr = {
+        "Default Rate": df_base["total_net_income"].corr(df_base["default_rate"]),
+        "LGD": df_base["total_net_income"].corr(df_base["lgd"]),
+        "Margin Shock": df_base["total_net_income"].corr(df_base["margin_shock"]),
+    }
+    path = os.path.join(fig_dir, "sensitivity_corr.png")
+    plt.figure()
+    plt.bar(list(corr.keys()), list(corr.values()))
+    plt.title("Sensitivity (Correlation)")
+    plt.ylabel("Correlation with Net Income")
+    plt.xticks(rotation=90)
+    _savefig(path)
+    return path, corr
+
+def plot_tail(df_base, fig_dir, var_alpha=0.05):
+    x = df_base["total_net_income"].sort_values().reset_index(drop=True)
+    var = x.quantile(var_alpha)
+    path = os.path.join(fig_dir, "tail_total_net_income.png")
+    plt.figure()
+    plt.plot(x.values)
+    plt.axhline(var)
+    plt.title("Ordered Total Net Income (Tail View)")
+    plt.xlabel("Simulation Rank")
+    plt.ylabel("Total Net Income")
+    _savefig(path)
+    return path, float(var)
+
+def plot_base_vs_stress(df_base, df_stress, fig_dir):
+    path = os.path.join(fig_dir, "base_vs_stress_total_net_income.png")
+    plt.figure()
+    plt.hist(df_base["total_net_income"], bins=50, alpha=0.6, label="Base")
+    plt.hist(df_stress["total_net_income"], bins=50, alpha=0.6, label="Stress")
+    plt.title("Base vs Stress (Total Net Income)")
+    plt.xlabel("Total Net Income")
+    plt.ylabel("Frequency")
+    plt.legend()
+    _savefig(path)
+    return path
+
+def plot_equity_return(df_base, cfg, fig_dir):
+    # equity = notional * (1 - funding_ratio)
+    notional = float(cfg["portfolio"]["notional"])
+    funding_ratio = float(cfg["funding"]["funding_ratio"])
+    equity = notional * (1.0 - funding_ratio)
+
+    ret = df_base["total_net_income"] / equity
+    path = os.path.join(fig_dir, "equity_return_distribution.png")
+    plt.figure()
+    plt.hist(ret, bins=50)
+    plt.title("Equity Return Distribution")
+    plt.xlabel("Return Multiple (Total Net Income / Equity)")
+    plt.ylabel("Frequency")
+    _savefig(path)
+    return path, float(ret.mean()), float(ret.quantile(0.05))
+
+def _build_pdf(out_pdf_path, fig_paths, title="Monte Carlo Report"):
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+
+    c = canvas.Canvas(out_pdf_path, pagesize=LETTER)
+    W, H = LETTER
+
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(60, H - 80, title)
+    c.setFont("Helvetica", 11)
+    c.drawString(60, H - 110, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    c.showPage()
+
+    for p in fig_paths:
+        try:
+            img = ImageReader(p)
+            iw, ih = img.getSize()
+            margin = 60
+            max_w = W - 2 * margin
+            max_h = H - 2 * margin
+            scale = min(max_w / iw, max_h / ih)
+            dw, dh = iw * scale, ih * scale
+            x = (W - dw) / 2
+            y = (H - dh) / 2
+            c.drawImage(img, x, y, width=dw, height=dh)
+        except Exception as e:
+            c.setFont("Helvetica", 12)
+            c.drawString(60, H - 80, f"Failed to render image: {os.path.basename(p)}")
+            c.drawString(60, H - 100, str(e)[:120])
+        c.showPage()
+
+    c.save()
+
+def export_all(cfg, df_base, out_dir, fig_dir, df_stress=None):
+    # save csv
+    df_base.to_csv(os.path.join(out_dir, "mc_results.csv"), index=False)
+    if df_stress is not None:
+        df_stress.to_csv(os.path.join(out_dir, "mc_results_stress.csv"), index=False)
+
+    # config snapshot
+    with open(os.path.join(out_dir, "config_snapshot.json"), "w") as f:
+        json.dump(cfg, f, indent=2)
+
+    # base summary
+    mean_income = float(df_base["total_net_income"].mean())
+    p5_income = float(df_base["total_net_income"].quantile(0.05))
+    loss_prob = float((df_base["total_net_income"] < 0).mean())
+
+    fig_paths = []
+
+    # ===== Base vs Stress Overlay (force generate) =====
+    # Define "Stress" as top 20% default_rate scenarios (worst credit environment)
+    if "default_rate" in df_res.columns:
+        import matplotlib.pyplot as plt
+
+        q = df_res["default_rate"].quantile(0.80)
+        base = df_res
+        stress = df_res[df_res["default_rate"] >= q]
+
+        png_overlay = os.path.join(fig_dir, "base_vs_stress_total_net_income.png")
+
+        plt.figure()
+        plt.hist(base["total_net_income"], bins=40, alpha=0.6, label="Base")
+        plt.hist(stress["total_net_income"], bins=40, alpha=0.6,
+                 label="Stress (top 20% default rate)")
+        plt.title("Base vs Stress (Total Net Income)")
+        plt.xlabel("Total Net Income")
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(png_overlay)
+        plt.close()
+
+        fig_paths.append(png_overlay)
+
+
+    # 1) overlay
+    if df_stress is not None:
+        fig_paths.append(plot_base_vs_stress(df_base, df_stress, fig_dir))
+
+    # 2) base dist
+    fig_paths.append(plot_dist_total_net_income(df_base, fig_dir))
+
+    # 3) sensitivity
+    sens_path, corr = plot_sensitivity(df_base, fig_dir)
+    fig_paths.append(sens_path)
+
+    # 4) tail
+    tail_path, var5 = plot_tail(df_base, fig_dir)
+    fig_paths.append(tail_path)
+
+    # 5) equity return distribution  <<<< THE ONE YOU WANT
+    eq_path, eq_mean, eq_p5 = plot_equity_return(df_base, cfg, fig_dir)
+    fig_paths.append(eq_path)
+
+    # txt summary
+    with open(os.path.join(out_dir, "summary.txt"), "w") as f:
+        f.write("==== Monte Carlo Summary (Base) ====\n")
+        f.write(f"Expected Total Net Income: {mean_income:,.2f}\n")
+        f.write(f"5th Percentile (Worst 5%): {p5_income:,.2f}\n")
+        f.write(f"Probability of Loss: {loss_prob:.4f}\n\n")
+        f.write("==== Sensitivity (Correlation with Net Income) ====\n")
+        for k, v in corr.items():
+            f.write(f"{k}: {v:.6f}\n")
+        f.write("\n==== Tail Risk ====\n")
+        f.write(f"VaR 5% (Total Net Income): {var5:,.2f}\n\n")
+        f.write("==== Equity Return (Multiple) ====\n")
+        f.write(f"Mean: {eq_mean:.6f}\n")
+        f.write(f"5% Worst: {eq_p5:.6f}\n")
+
+    out_pdf = os.path.join(out_dir, "report.pdf")
+
+    # ----- Ensure PDF includes key figures (search both out_dir and fig_dir) -----
+    preferred = [
+        "dist_total_net_income.png",
+        "base_vs_stress_total_net_income.png",
+        "equity_return_distribution.png",
+        "sensitivity_corr.png",
+        "tail_total_net_income.png",
+    ]
+    # Build an ordered list from wherever the files exist
+    ordered = []
+    for name in preferred:
+        cand1 = os.path.join(fig_dir, name)
+        cand2 = os.path.join(out_dir, name)
+        if os.path.exists(cand1): ordered.append(cand1)
+        elif os.path.exists(cand2): ordered.append(cand2)
+    
+    # Fallback: include any other pngs not already included (fig_dir then out_dir)
+    def _list_pngs(d):
+        if not os.path.isdir(d): return []
+        return [os.path.join(d,f) for f in os.listdir(d) if f.lower().endswith(".png")]
+    
+    extras = []
+    for d in [fig_dir, out_dir]:
+        for fp in _list_pngs(d):
+            if fp not in ordered and fp not in extras:
+                extras.append(fp)
+    
+    fig_paths = ordered + extras
+
+
+    # ---- Force include key figures in PDF (robust scan) ----
+
+
+
+    # Sometimes plots are saved in out_dir instead of fig_dir; scan both.
+
+
+
+    candidates = [
+
+
+
+        "base_vs_stress_total_net_income.png",
+
+
+
+        "base_vs_stress_total_net_income_overlay.png",
+
+
+
+        "base_vs_stress_total_net_income.png",  # keep twice-safe
+
+
+
+        "equity_return_distribution.png",
+
+
+
+    ]
+
+
+
+    search_dirs = [fig_dir, out_dir]
+
+
+
+    for name in candidates:
+
+
+
+        for d in search_dirs:
+
+
+
+            try_path = os.path.join(d, name)
+
+
+
+            if os.path.exists(try_path) and try_path not in fig_paths:
+
+
+
+                fig_paths.append(try_path)
+
+
+
+                break
+
+
+
+    _build_pdf(out_pdf, fig_paths, title="Monte Carlo Report")
+    return mean_income, p5_income, loss_prob, out_pdf
