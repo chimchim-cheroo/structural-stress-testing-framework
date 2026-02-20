@@ -1,0 +1,216 @@
+
+import os
+import json
+import math
+import pandas as pd
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+
+
+def _fmt_money(x):
+    try:
+        return "${:,.0f}".format(float(x))
+    except Exception:
+        return str(x)
+
+def _fmt_pct(x):
+    try:
+        return "{:.2f}%".format(100.0 * float(x))
+    except Exception:
+        return str(x)
+
+def _safe_read_csv(path):
+    try:
+        if os.path.exists(path):
+            return pd.read_csv(path)
+    except Exception:
+        pass
+    return None
+
+def _safe_image(path, width=520):
+    if not os.path.exists(path):
+        return None
+    try:
+        img = RLImage(path)
+        img.drawWidth = width
+        # keep aspect
+        img.drawHeight = img.imageHeight * (width / img.imageWidth)
+        return img
+    except Exception:
+        return None
+
+
+def generate_pdf_report(output_dir: str, cfg: dict | None = None) -> str:
+    """
+    Creates/overwrites output_dir/report.pdf.
+    Auto-includes:
+      - existing figures if present (dist_total_net_income.png, equity dist, sensitivity, tail view)
+      - NEW: tail_decomposition.csv + ni_distribution.png + credit_vs_liquidity_scatter.png
+      - NEW: correlation block if credit_loss/liquidity_loss exist
+    """
+    mc_path = os.path.join(output_dir, "mc_results.csv")
+    if not os.path.exists(mc_path):
+        raise FileNotFoundError(f"Missing {mc_path}")
+
+    df = pd.read_csv(mc_path)
+
+    # load cfg snapshot if not provided
+    if cfg is None:
+        snap = os.path.join(output_dir, "config_snapshot.json")
+        if os.path.exists(snap):
+            with open(snap, "r") as f:
+                cfg = json.load(f)
+        else:
+            cfg = {}
+
+    run_id = os.path.basename(output_dir.rstrip("/"))
+
+    # --- headline metrics ---
+    ni = df["total_net_income"]
+    expected = float(ni.mean())
+    p5 = float(ni.quantile(0.05))
+    prob_loss = float((ni < 0).mean())
+
+    # equity return if we can
+    notional = float(cfg.get("portfolio", {}).get("notional", 0) or 0)
+    funding_ratio = float(cfg.get("funding", {}).get("funding_ratio", 0.8))
+    equity_capital = notional * (1.0 - funding_ratio) if notional else None
+
+    if equity_capital and equity_capital > 0:
+        eq_ret = df["total_net_income"] / equity_capital
+        eq_mean = float(eq_ret.mean())
+        eq_p5 = float(eq_ret.quantile(0.05))
+        prob_eq_loss = float((eq_ret < 0).mean())
+    else:
+        eq_mean = eq_p5 = prob_eq_loss = None
+
+    # --- optional new diagnostics ---
+    has_credit = "credit_loss" in df.columns
+    has_liq = "liquidity_loss" in df.columns
+    corr_credit = float(df["total_net_income"].corr(df["credit_loss"])) if has_credit else None
+    corr_liq = float(df["total_net_income"].corr(df["liquidity_loss"])) if has_liq else None
+
+    # tail decomposition CSV (your newly generated artifact)
+    fig_dir = os.path.join(output_dir, "figures")
+    tail_csv = os.path.join(fig_dir, "tail_decomposition.csv")
+    decomp = _safe_read_csv(tail_csv)
+
+    # --- build PDF ---
+    pdf_path = os.path.join(output_dir, "report.pdf")
+    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Monte Carlo Risk Report", styles["Title"]))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"Run ID: <b>{run_id}</b>", styles["Normal"]))
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Key Metrics", styles["Heading2"]))
+    story.append(Paragraph(f"- Expected Total Net Income: <b>{_fmt_money(expected)}</b>", styles["Normal"]))
+    story.append(Paragraph(f"- 5th Percentile (Worst 5%): <b>{_fmt_money(p5)}</b>", styles["Normal"]))
+    story.append(Paragraph(f"- Probability of Loss: <b>{_fmt_pct(prob_loss)}</b>", styles["Normal"]))
+
+    if eq_mean is not None:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Equity Return Metrics", styles["Heading2"]))
+        story.append(Paragraph(f"- Equity Return (mean): <b>{_fmt_pct(eq_mean)}</b>", styles["Normal"]))
+        story.append(Paragraph(f"- Equity Return (5th pct): <b>{_fmt_pct(eq_p5)}</b>", styles["Normal"]))
+        story.append(Paragraph(f"- Probability of Equity Loss: <b>{_fmt_pct(prob_eq_loss)}</b>", styles["Normal"]))
+
+    # config snapshot (selected)
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Config Snapshot (selected)", styles["Heading2"]))
+    # keep compact
+    sel = {
+        "seed": cfg.get("seed"),
+        "sim": cfg.get("sim"),
+        "portfolio": cfg.get("portfolio"),
+        "funding": cfg.get("funding"),
+        "opex": cfg.get("opex"),
+        "risk_engine": cfg.get("risk_engine"),
+    }
+    story.append(Paragraph(f"<font size=9>{str(sel)[:900]}{'...' if len(str(sel))>900 else ''}</font>", styles["Normal"]))
+
+    # existing figures (if present)
+    story.append(PageBreak())
+    story.append(Paragraph("Distributions & Sensitivities", styles["Heading2"]))
+    story.append(Spacer(1, 8))
+
+    # prefer your new NI distribution if present, else legacy one
+    candidates = [
+        os.path.join(fig_dir, "ni_distribution.png"),
+        os.path.join(fig_dir, "dist_total_net_income.png"),
+        os.path.join(fig_dir, "dist_total_net_income.png".replace("dist_", "dist_")),  # harmless
+    ]
+    for p in candidates:
+        img = _safe_image(p)
+        if img:
+            story.append(Paragraph(os.path.basename(p), styles["Normal"]))
+            story.append(img)
+            story.append(Spacer(1, 14))
+            break
+
+    for p in [
+        os.path.join(fig_dir, "dist_equity_return.png"),
+        os.path.join(fig_dir, "sensitivity_corr.png"),
+        os.path.join(fig_dir, "tail_total_net_income.png"),
+        os.path.join(fig_dir, "credit_vs_liquidity_scatter.png"),
+    ]:
+        img = _safe_image(p)
+        if img:
+            story.append(Paragraph(os.path.basename(p), styles["Normal"]))
+            story.append(img)
+            story.append(Spacer(1, 14))
+
+    # NEW: Tail decomposition table + correlation block
+    if decomp is not None:
+        story.append(PageBreak())
+        story.append(Paragraph("Tail Decomposition (ALL vs Worst 5%)", styles["Heading2"]))
+        story.append(Spacer(1, 8))
+
+        # render small table (first ~2 rows, key cols)
+        show_cols = [c for c in decomp.columns if c in [
+            "scope","n","ni_mean","ni_p5","ni_min",
+            "credit_mean","credit_p95","credit_max","p_credit_gt_0",
+            "liq_mean","liq_p95","liq_max","p_liq_gt_0"
+        ]]
+        if not show_cols:
+            show_cols = list(decomp.columns)
+
+        small = decomp[show_cols].copy()
+        # format
+        for c in small.columns:
+            if c.startswith("p_"):
+                small[c] = small[c].apply(lambda x: _fmt_pct(x))
+            elif any(k in c for k in ["mean","p5","p95","min","max"]) and c not in ["scope"]:
+                small[c] = small[c].apply(_fmt_money)
+
+        data = [show_cols] + small.values.tolist()
+
+        tbl = Table(data, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 8),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ]))
+        story.append(tbl)
+
+    if has_credit or has_liq:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("Drivers (Correlation with Net Income)", styles["Heading2"]))
+        if corr_credit is not None:
+            story.append(Paragraph(f"- Corr(NI, credit_loss): <b>{corr_credit:.3f}</b>", styles["Normal"]))
+        if corr_liq is not None:
+            story.append(Paragraph(f"- Corr(NI, liquidity_loss): <b>{corr_liq:.3f}</b>", styles["Normal"]))
+        if has_liq:
+            p_liq = float((df["liquidity_loss"] > 0).mean())
+            story.append(Paragraph(f"- P(liquidity_loss &gt; 0): <b>{_fmt_pct(p_liq)}</b>", styles["Normal"]))
+
+    doc.build(story)
+    return pdf_path

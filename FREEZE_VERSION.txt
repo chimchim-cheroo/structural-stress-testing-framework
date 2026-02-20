@@ -1,0 +1,18 @@
+Freeze Version 3
+Timestamp: 2026-02-20 13:03:05
+
+Scope:
+- Bullet maturity cashflow structure
+- Correlated macro factor (Z) driving default, LGD, margin shock
+- Market-freeze liquidity regime (Markov persistence)
+- Refinancing cliff at maturity with stress-dependent refinance failure + haircut (liquidity tail)
+- Auto artifacts each run:
+  * outputs/<run_id>/mc_results.csv
+  * outputs/<run_id>/config_snapshot.json
+  * outputs/<run_id>/figures/*.png (NI, tail NI, equity return, sensitivity, credit-vs-liquidity)
+  * outputs/<run_id>/figures/tail_decomposition.csv
+  * outputs/<run_id>/report.pdf
+
+Acceptance:
+- Reproducibility confirmed with seed=42 (signatures match across runs)
+- PDF layout rescaled (no overflow) + table fits margin

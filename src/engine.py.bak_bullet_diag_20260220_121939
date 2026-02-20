@@ -1,6 +1,8 @@
+
+# ===== BULLET + STOCHASTIC LIQUIDITY VERSION =====
+
 import numpy as np
 import pandas as pd
-
 
 def _sample_params(rng, cfg):
     re = cfg["risk_engine"]
@@ -30,18 +32,18 @@ def _sample_params(rng, cfg):
     return default_rate, lgd, margin_shock
 
 
-def _simulate_one_path(cfg, default_rate, lgd, margin_shock):
+def _simulate_one_path(cfg, default_rate, lgd, margin_shock, rng):
 
     H = cfg["sim"]["H"]
     notional = cfg["portfolio"]["notional"]
+    funding_cfg = cfg.get("funding", {})
 
     A_limit = notional * 0.6
     B_limit = notional * 0.2
     C_limit = notional * 0.1
-    WH_limit = notional * 0.1
 
     A_bal = B_bal = C_bal = 0.0
-    WH_bal = notional  # month 0 bridge
+    WH_bal = notional
 
     coupon = cfg["portfolio"]["annual_coupon_rate"] + margin_shock
     coupon_m = coupon / 12
@@ -51,31 +53,61 @@ def _simulate_one_path(cfg, default_rate, lgd, margin_shock):
     C_rate = 0.10 / 12
     WH_rate = 0.08 / 12
 
-    monthly_principal = notional / H
-    outstanding = notional
+    p_freeze_start = funding_cfg.get("p_freeze_start", 0.0)
+    p_freeze_persist = funding_cfg.get("p_freeze_persist", 0.0)
+    freeze_draw_factor = funding_cfg.get("freeze_draw_factor", 1.0)
+    wh_limit = funding_cfg.get("wh_limit", notional)
+    liquidity_shortfall_rate = funding_cfg.get("liquidity_shortfall_rate", 0.0)
+
+    term_years = H / 12
+    p_default_term = 1 - (1 - default_rate) ** term_years
 
     total_income = 0.0
+    outstanding = notional
+
+    in_freeze = False
+    freeze_months = 0
 
     for t in range(H):
+
+        if in_freeze:
+            in_freeze = (rng.random() < p_freeze_persist)
+        else:
+            in_freeze = (rng.random() < p_freeze_start)
+
+        if in_freeze:
+            freeze_months += 1
 
         if t > 0:
             funding_needed = outstanding - (A_bal + B_bal + C_bal)
 
-            draw_A = min(A_limit - A_bal, funding_needed)
+            draw_factor = freeze_draw_factor if in_freeze else 1.0
+
+            draw_A = min((A_limit - A_bal) * draw_factor, funding_needed)
             A_bal += draw_A
             funding_needed -= draw_A
 
-            draw_B = min(B_limit - B_bal, funding_needed)
+            draw_B = min((B_limit - B_bal) * draw_factor, funding_needed)
             B_bal += draw_B
             funding_needed -= draw_B
 
-            draw_C = min(C_limit - C_bal, funding_needed)
+            draw_C = min((C_limit - C_bal) * draw_factor, funding_needed)
             C_bal += draw_C
             funding_needed -= draw_C
 
-            WH_bal = max(outstanding - (A_bal + B_bal + C_bal), 0)
+            residual = max(outstanding - (A_bal + B_bal + C_bal), 0)
+            WH_bal = min(residual, wh_limit)
 
         interest_income = outstanding * coupon_m
+
+        is_maturity = (t == H - 1)
+
+        loss_t = 0.0
+        if is_maturity:
+            D = 1 if rng.random() < p_default_term else 0
+            loss_t = notional * D * lgd
+            outstanding = 0
+
         funding_cost = (
             A_bal * A_rate +
             B_bal * B_rate +
@@ -83,48 +115,14 @@ def _simulate_one_path(cfg, default_rate, lgd, margin_shock):
             WH_bal * WH_rate
         )
 
-        total_income += (interest_income - funding_cost)
-
-        repay = monthly_principal
-        total_bal = A_bal + B_bal + C_bal + WH_bal
-
-        if total_bal > 0:
-            A_bal -= repay * A_bal / total_bal
-            B_bal -= repay * B_bal / total_bal
-            C_bal -= repay * C_bal / total_bal
-            WH_bal -= repay * WH_bal / total_bal
-
-        outstanding -= repay
-
-    # ---- Default Loss Allocation ----
-    cum_default = min(default_rate * (H / 12), 1)
-    total_loss = notional * cum_default * lgd
-
-    remaining_loss = total_loss
-
-    C_loss = min(C_bal, remaining_loss)
-    remaining_loss -= C_loss
-
-    B_loss = min(B_bal, remaining_loss)
-    remaining_loss -= B_loss
-
-    A_loss = min(A_bal, remaining_loss)
-    remaining_loss -= A_loss
-
-    WH_loss = min(WH_bal, remaining_loss)
-    remaining_loss -= WH_loss
-
-    total_income -= total_loss
+        total_income += (interest_income - funding_cost - loss_t)
 
     return {
         "total_net_income": total_income,
         "default_rate": default_rate,
         "lgd": lgd,
         "margin_shock": margin_shock,
-        "A_loss": A_loss,
-        "B_loss": B_loss,
-        "C_loss": C_loss,
-        "WH_loss": WH_loss
+        "freeze_months": freeze_months
     }
 
 
@@ -133,9 +131,8 @@ def run_mc(cfg):
     N = cfg["sim"]["N"]
 
     records = []
-
-    for i in range(N):
-        res = _simulate_one_path(cfg, *_sample_params(rng, cfg))
-        records.append(res)
+    for _ in range(N):
+        dr, lgd, ms = _sample_params(rng, cfg)
+        records.append(_simulate_one_path(cfg, dr, lgd, ms, rng))
 
     return pd.DataFrame(records)

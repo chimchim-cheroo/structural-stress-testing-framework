@@ -1,0 +1,106 @@
+
+# ===== BULLET + LIQUIDITY REFINANCE CLIFF MODEL =====
+
+import numpy as np
+import pandas as pd
+
+
+def _sample_params(rng, cfg):
+    re = cfg["risk_engine"]
+
+    Z = rng.normal()
+    e1, e2, e3 = rng.normal(size=3)
+
+    z_default = np.sqrt(re["rho_default"]) * Z + np.sqrt(1 - re["rho_default"]) * e1
+    z_lgd = np.sqrt(re["rho_lgd"]) * Z + np.sqrt(1 - re["rho_lgd"]) * e2
+    z_margin = np.sqrt(re["rho_margin"]) * Z + np.sqrt(1 - re["rho_margin"]) * e3
+
+    default_rate = re["default_rate"]["base"] + re["default_rate"]["shock_coef"] * (-z_default)
+    default_rate = float(np.clip(default_rate,
+                                 re["default_rate"]["clip_min"],
+                                 re["default_rate"]["clip_max"]))
+
+    lgd = re["lgd"]["base"] + re["lgd"]["shock_coef"] * (-z_lgd)
+    lgd = float(np.clip(lgd,
+                        re["lgd"]["clip_min"],
+                        re["lgd"]["clip_max"]))
+
+    margin_shock = re["margin_shock"]["shock_coef"] * z_margin
+    margin_shock = float(np.clip(margin_shock,
+                                 re["margin_shock"]["clip_min"],
+                                 re["margin_shock"]["clip_max"]))
+
+    return default_rate, lgd, margin_shock
+
+
+def _simulate_one_path(cfg, default_rate, lgd, margin_shock, rng):
+
+    H = int(cfg["sim"]["H"])
+    notional = float(cfg["portfolio"]["notional"])
+    funding_cfg = cfg.get("funding", {})
+
+    coupon = float(cfg["portfolio"]["annual_coupon_rate"]) + margin_shock
+    coupon_m = coupon / 12
+
+    # liquidity parameters
+    p_freeze_start = funding_cfg.get("p_freeze_start", 0.0)
+    p_freeze_persist = funding_cfg.get("p_freeze_persist", 0.0)
+    refinance_fail_prob = funding_cfg.get("refinance_fail_prob", 0.5)
+    forced_sale_haircut = funding_cfg.get("forced_sale_haircut", 0.3)
+
+    # bullet term default
+    term_years = H / 12
+    p_default_term = 1 - (1 - default_rate) ** term_years
+
+    total_income = 0.0
+    credit_loss = 0.0
+    liquidity_loss = 0.0
+
+    in_freeze = False
+    outstanding = notional
+
+    for t in range(H):
+
+        # freeze state
+        if in_freeze:
+            in_freeze = (rng.random() < p_freeze_persist)
+        else:
+            in_freeze = (rng.random() < p_freeze_start)
+
+        # interest income until maturity
+        interest_income = outstanding * coupon_m
+        total_income += interest_income
+
+        if t == H - 1:
+
+            # credit default
+            D = 1 if rng.random() < p_default_term else 0
+            credit_loss = notional * D * lgd
+
+            # refinancing failure under freeze
+            if in_freeze and rng.random() < refinance_fail_prob:
+                forced_value = notional * (1 - forced_sale_haircut)
+                liquidity_loss = notional - forced_value
+
+            total_income -= credit_loss
+            total_income -= liquidity_loss
+
+            outstanding = 0
+
+    return {
+        "total_net_income": total_income,
+        "credit_loss": credit_loss,
+        "liquidity_loss": liquidity_loss,
+        "default_rate": default_rate,
+        "lgd": lgd
+    }
+
+
+def run_mc(cfg):
+    rng = np.random.default_rng(cfg["seed"])
+    N = cfg["sim"]["N"]
+    out = []
+    for _ in range(N):
+        dr, lg, ms = _sample_params(rng, cfg)
+        out.append(_simulate_one_path(cfg, dr, lg, ms, rng))
+    return pd.DataFrame(out)

@@ -1,0 +1,153 @@
+import numpy as np
+import pandas as pd
+
+
+def _sample_params(rng, cfg):
+    re = cfg["risk_engine"]
+
+    Z = rng.normal()
+    e1, e2, e3 = rng.normal(size=3)
+
+    z_default = np.sqrt(re["rho_default"]) * Z + np.sqrt(1 - re["rho_default"]) * e1
+    z_lgd = np.sqrt(re["rho_lgd"]) * Z + np.sqrt(1 - re["rho_lgd"]) * e2
+    z_margin = np.sqrt(re["rho_margin"]) * Z + np.sqrt(1 - re["rho_margin"]) * e3
+
+    default_rate = re["default_rate"]["base"] + re["default_rate"]["shock_coef"] * (-z_default)
+    default_rate = float(np.clip(default_rate,
+                                 re["default_rate"]["clip_min"],
+                                 re["default_rate"]["clip_max"]))
+
+    lgd = re["lgd"]["base"] + re["lgd"]["shock_coef"] * (-z_lgd)
+    lgd = float(np.clip(lgd,
+                        re["lgd"]["clip_min"],
+                        re["lgd"]["clip_max"]))
+
+    margin_shock = re["margin_shock"]["shock_coef"] * z_margin
+    margin_shock = float(np.clip(margin_shock,
+                                 re["margin_shock"]["clip_min"],
+                                 re["margin_shock"]["clip_max"]))
+
+    return default_rate, lgd, margin_shock
+
+
+def _simulate_one_path(cfg, default_rate, lgd, margin_shock, rng):
+
+    H = int(cfg["sim"]["H"])
+    notional = float(cfg["portfolio"]["notional"])
+
+    A_limit = notional * 0.6
+    B_limit = notional * 0.2
+    C_limit = notional * 0.1
+
+    A_bal = B_bal = C_bal = 0.0
+    WH_bal = notional
+
+    coupon = float(cfg["portfolio"]["annual_coupon_rate"]) + margin_shock
+    coupon_m = coupon / 12.0
+
+    A_rate = 0.05 / 12.0
+    B_rate = 0.07 / 12.0
+    C_rate = 0.10 / 12.0
+    WH_rate = 0.08 / 12.0
+
+    monthly_principal = notional / H
+    outstanding = notional
+
+    p_default_m = np.clip(default_rate / 12.0, 0.0, 1.0)
+
+    total_income = 0.0
+
+    A_loss = B_loss = C_loss = WH_loss = 0.0
+
+    for t in range(H):
+
+        if t > 0:
+            funding_needed = outstanding - (A_bal + B_bal + C_bal)
+
+            if funding_needed > 0:
+                draw_A = min(A_limit - A_bal, funding_needed)
+                A_bal += draw_A
+                funding_needed -= draw_A
+
+                draw_B = min(B_limit - B_bal, funding_needed)
+                B_bal += draw_B
+                funding_needed -= draw_B
+
+                draw_C = min(C_limit - C_bal, funding_needed)
+                C_bal += draw_C
+                funding_needed -= draw_C
+
+            WH_bal = max(outstanding - (A_bal + B_bal + C_bal), 0.0)
+
+        interest_income = outstanding * coupon_m
+
+        D = 1.0 if rng.random() < p_default_m else 0.0
+        loss_t = monthly_principal * D * lgd
+        recovered_principal = monthly_principal - loss_t
+
+        # ===== Proper Loss Absorption =====
+        remaining = loss_t
+
+        hit = min(C_bal, remaining)
+        C_bal -= hit
+        C_loss += hit
+        remaining -= hit
+
+        hit = min(B_bal, remaining)
+        B_bal -= hit
+        B_loss += hit
+        remaining -= hit
+
+        hit = min(A_bal, remaining)
+        A_bal -= hit
+        A_loss += hit
+        remaining -= hit
+
+        hit = min(WH_bal, remaining)
+        WH_bal -= hit
+        WH_loss += hit
+        remaining -= hit
+
+        funding_cost = (
+            A_bal * A_rate +
+            B_bal * B_rate +
+            C_bal * C_rate +
+            WH_bal * WH_rate
+        )
+
+        total_income += (interest_income - funding_cost - loss_t)
+
+        repay_cash = recovered_principal
+        total_bal = A_bal + B_bal + C_bal + WH_bal
+
+        if total_bal > 0 and repay_cash > 0:
+            A_bal -= repay_cash * A_bal / total_bal
+            B_bal -= repay_cash * B_bal / total_bal
+            C_bal -= repay_cash * C_bal / total_bal
+            WH_bal -= repay_cash * WH_bal / total_bal
+
+        outstanding = max(outstanding - monthly_principal, 0.0)
+
+    return {
+        "total_net_income": total_income,
+        "default_rate": default_rate,
+        "lgd": lgd,
+        "margin_shock": margin_shock,
+        "A_loss": A_loss,
+        "B_loss": B_loss,
+        "C_loss": C_loss,
+        "WH_loss": WH_loss,
+    }
+
+
+def run_mc(cfg):
+    rng = np.random.default_rng(cfg["seed"])
+    N = int(cfg["sim"]["N"])
+
+    records = []
+    for _ in range(N):
+        params = _sample_params(rng, cfg)
+        res = _simulate_one_path(cfg, *params, rng)
+        records.append(res)
+
+    return pd.DataFrame(records)

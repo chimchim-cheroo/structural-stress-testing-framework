@@ -1,11 +1,18 @@
+
+# ===== REFINANCE CLIFF (LIQUIDITY-TAIL ENHANCED) =====
+
 import numpy as np
 import pandas as pd
 
 
-def _sample_params(rng, cfg):
+def _sample_systemic(rng):
+    # one-factor systemic driver
+    return float(rng.normal())
+
+
+def _sample_params(rng, cfg, Z):
     re = cfg["risk_engine"]
 
-    Z = rng.normal()
     e1, e2, e3 = rng.normal(size=3)
 
     z_default = np.sqrt(re["rho_default"]) * Z + np.sqrt(1 - re["rho_default"]) * e1
@@ -30,112 +37,89 @@ def _sample_params(rng, cfg):
     return default_rate, lgd, margin_shock
 
 
-def _simulate_one_path(cfg, default_rate, lgd, margin_shock):
+def _simulate_one_path(cfg, Z, default_rate, lgd, margin_shock, rng):
+    H = int(cfg["sim"]["H"])
+    notional = float(cfg["portfolio"]["notional"])
+    funding_cfg = cfg.get("funding", {})
 
-    H = cfg["sim"]["H"]
-    notional = cfg["portfolio"]["notional"]
+    coupon = float(cfg["portfolio"]["annual_coupon_rate"]) + float(margin_shock)
+    coupon_m = coupon / 12.0
 
-    A_limit = notional * 0.6
-    B_limit = notional * 0.2
-    C_limit = notional * 0.1
-    WH_limit = notional * 0.1
+    # freeze regime
+    p_freeze_start = float(funding_cfg.get("p_freeze_start", 0.06))
+    p_freeze_persist = float(funding_cfg.get("p_freeze_persist", 0.70))
 
-    A_bal = B_bal = C_bal = 0.0
-    WH_bal = notional  # month 0 bridge
+    # refinance cliff parameters (tail-enhanced)
+    base_fail = float(funding_cfg.get("refinance_fail_prob", 0.50))
+    fail_sens = float(funding_cfg.get("refinance_fail_sens", 0.35))   # higher => more likely to fail when Z is bad
 
-    coupon = cfg["portfolio"]["annual_coupon_rate"] + margin_shock
-    coupon_m = coupon / 12
+    base_haircut = float(funding_cfg.get("forced_sale_haircut", 0.30))
+    hair_sens = float(funding_cfg.get("haircut_sens", 0.25))          # higher => deeper haircut when Z is bad
+    hair_noise = float(funding_cfg.get("haircut_noise", 0.10))        # idiosyncratic dispersion
+    hair_min = float(funding_cfg.get("haircut_min", 0.10))
+    hair_max = float(funding_cfg.get("haircut_max", 0.70))
 
-    A_rate = 0.05 / 12
-    B_rate = 0.07 / 12
-    C_rate = 0.10 / 12
-    WH_rate = 0.08 / 12
-
-    monthly_principal = notional / H
-    outstanding = notional
+    # bullet term default probability
+    term_years = H / 12.0
+    p_default_term = 1.0 - (1.0 - np.clip(default_rate, 0.0, 1.0)) ** term_years
+    p_default_term = float(np.clip(p_default_term, 0.0, 1.0))
 
     total_income = 0.0
+    credit_loss = 0.0
+    liquidity_loss = 0.0
+
+    in_freeze = False
+    outstanding = notional
 
     for t in range(H):
+        # freeze state (Markov)
+        if in_freeze:
+            in_freeze = (rng.random() < p_freeze_persist)
+        else:
+            in_freeze = (rng.random() < p_freeze_start)
 
-        if t > 0:
-            funding_needed = outstanding - (A_bal + B_bal + C_bal)
+        # interest until maturity
+        total_income += outstanding * coupon_m
 
-            draw_A = min(A_limit - A_bal, funding_needed)
-            A_bal += draw_A
-            funding_needed -= draw_A
+        if t == H - 1:
+            # credit default at maturity
+            D = 1.0 if (rng.random() < p_default_term) else 0.0
+            credit_loss = notional * D * lgd
 
-            draw_B = min(B_limit - B_bal, funding_needed)
-            B_bal += draw_B
-            funding_needed -= draw_B
+            # refinance failure only matters in freeze regime
+            if in_freeze:
+                # make fail probability stress-dependent (bad Z -> higher fail probability)
+                p_fail = base_fail + fail_sens * max(-Z, 0.0)
+                p_fail = float(np.clip(p_fail, 0.0, 0.995))
 
-            draw_C = min(C_limit - C_bal, funding_needed)
-            C_bal += draw_C
-            funding_needed -= draw_C
+                # haircut becomes stress-dependent + noisy (tail fattening)
+                hc = base_haircut + hair_sens * max(-Z, 0.0) + hair_noise * float(rng.normal())
+                hc = float(np.clip(hc, hair_min, hair_max))
 
-            WH_bal = max(outstanding - (A_bal + B_bal + C_bal), 0)
+                if rng.random() < p_fail:
+                    forced_value = notional * (1.0 - hc)
+                    liquidity_loss = notional - forced_value
 
-        interest_income = outstanding * coupon_m
-        funding_cost = (
-            A_bal * A_rate +
-            B_bal * B_rate +
-            C_bal * C_rate +
-            WH_bal * WH_rate
-        )
-
-        total_income += (interest_income - funding_cost)
-
-        repay = monthly_principal
-        total_bal = A_bal + B_bal + C_bal + WH_bal
-
-        if total_bal > 0:
-            A_bal -= repay * A_bal / total_bal
-            B_bal -= repay * B_bal / total_bal
-            C_bal -= repay * C_bal / total_bal
-            WH_bal -= repay * WH_bal / total_bal
-
-        outstanding -= repay
-
-    # ---- Default Loss Allocation ----
-    cum_default = min(default_rate * (H / 12), 1)
-    total_loss = notional * cum_default * lgd
-
-    remaining_loss = total_loss
-
-    C_loss = min(C_bal, remaining_loss)
-    remaining_loss -= C_loss
-
-    B_loss = min(B_bal, remaining_loss)
-    remaining_loss -= B_loss
-
-    A_loss = min(A_bal, remaining_loss)
-    remaining_loss -= A_loss
-
-    WH_loss = min(WH_bal, remaining_loss)
-    remaining_loss -= WH_loss
-
-    total_income -= total_loss
+            total_income -= (credit_loss + liquidity_loss)
+            outstanding = 0.0
 
     return {
-        "total_net_income": total_income,
-        "default_rate": default_rate,
-        "lgd": lgd,
-        "margin_shock": margin_shock,
-        "A_loss": A_loss,
-        "B_loss": B_loss,
-        "C_loss": C_loss,
-        "WH_loss": WH_loss
+        "total_net_income": float(total_income),
+        "credit_loss": float(credit_loss),
+        "liquidity_loss": float(liquidity_loss),
+        "Z_sys": float(Z),
+        "default_rate": float(default_rate),
+        "lgd": float(lgd),
+        "margin_shock": float(margin_shock),
     }
 
 
 def run_mc(cfg):
     rng = np.random.default_rng(cfg["seed"])
-    N = cfg["sim"]["N"]
-
-    records = []
-
-    for i in range(N):
-        res = _simulate_one_path(cfg, *_sample_params(rng, cfg))
-        records.append(res)
-
-    return pd.DataFrame(records)
+    N = int(cfg["sim"]["N"])
+    out = []
+    for _ in range(N):
+        Z = _sample_systemic(rng)
+        dr, lg, ms = _sample_params(rng, cfg, Z)
+        out.append(_simulate_one_path(cfg, Z, dr, lg, ms, rng))
+    return pd.DataFrame(out)

@@ -1,0 +1,195 @@
+
+# ===== BULLET + STOCHASTIC LIQUIDITY (WITH DIAGNOSTICS) =====
+
+import numpy as np
+import pandas as pd
+
+
+def _sample_params(rng, cfg):
+    re = cfg["risk_engine"]
+
+    Z = rng.normal()
+    e1, e2, e3 = rng.normal(size=3)
+
+    z_default = np.sqrt(re["rho_default"]) * Z + np.sqrt(1 - re["rho_default"]) * e1
+    z_lgd = np.sqrt(re["rho_lgd"]) * Z + np.sqrt(1 - re["rho_lgd"]) * e2
+    z_margin = np.sqrt(re["rho_margin"]) * Z + np.sqrt(1 - re["rho_margin"]) * e3
+
+    default_rate = re["default_rate"]["base"] + re["default_rate"]["shock_coef"] * (-z_default)
+    default_rate = float(np.clip(default_rate,
+                                 re["default_rate"]["clip_min"],
+                                 re["default_rate"]["clip_max"]))
+
+    lgd = re["lgd"]["base"] + re["lgd"]["shock_coef"] * (-z_lgd)
+    lgd = float(np.clip(lgd,
+                        re["lgd"]["clip_min"],
+                        re["lgd"]["clip_max"]))
+
+    margin_shock = re["margin_shock"]["shock_coef"] * z_margin
+    margin_shock = float(np.clip(margin_shock,
+                                 re["margin_shock"]["clip_min"],
+                                 re["margin_shock"]["clip_max"]))
+
+    return default_rate, lgd, margin_shock
+
+
+def _simulate_one_path(cfg, default_rate, lgd, margin_shock, rng):
+    H = int(cfg["sim"]["H"])
+    notional = float(cfg["portfolio"]["notional"])
+    funding_cfg = cfg.get("funding", {})
+
+    # commitments
+    A_limit = notional * 0.6
+    B_limit = notional * 0.2
+    C_limit = notional * 0.1
+
+    # balances
+    A_bal = B_bal = C_bal = 0.0
+    WH_bal = notional  # month 0 bridge
+
+    coupon = float(cfg["portfolio"]["annual_coupon_rate"]) + float(margin_shock)
+    coupon_m = coupon / 12.0
+
+    # funding rates (monthly)
+    A_rate_m = 0.05 / 12.0
+    B_rate_m = 0.07 / 12.0
+    C_rate_m = 0.10 / 12.0
+    WH_rate_base_m = 0.08 / 12.0
+
+    # liquidity stress params
+    p_freeze_start = float(funding_cfg.get("p_freeze_start", 0.0))
+    p_freeze_persist = float(funding_cfg.get("p_freeze_persist", 0.0))
+    freeze_draw_factor = float(funding_cfg.get("freeze_draw_factor", 1.0))
+    wh_limit = float(funding_cfg.get("wh_limit", notional))
+    wh_spread_jump = float(funding_cfg.get("wh_spread_jump", 0.0))  # annual add-on during freeze
+    liquidity_shortfall_rate = float(funding_cfg.get("liquidity_shortfall_rate", 0.0))  # annual punitive
+
+    # bullet term default probability (Excel-match: default at maturity)
+    term_years = H / 12.0
+    p_default_term = 1.0 - (1.0 - np.clip(default_rate, 0.0, 1.0)) ** term_years
+    p_default_term = float(np.clip(p_default_term, 0.0, 1.0))
+
+    total_income = 0.0
+
+    # diagnostics + liquidity state
+    in_freeze = False
+    freeze_months = 0
+    outstanding = notional  # constant until maturity
+
+    sum_WH = 0.0
+    max_WH = 0.0
+    max_emergency = 0.0
+    total_emergency_cost = 0.0
+    max_funding_cost = 0.0
+    ever_emergency = 0
+
+    # credit loss at maturity only
+    total_credit_loss = 0.0
+
+    for t in range(H):
+        # freeze state update
+        if in_freeze:
+            in_freeze = (rng.random() < p_freeze_persist)
+        else:
+            in_freeze = (rng.random() < p_freeze_start)
+        if in_freeze:
+            freeze_months += 1
+
+        # funding update (lagged)
+        emergency_bal = 0.0
+        if t > 0:
+            funding_needed = outstanding - (A_bal + B_bal + C_bal)
+            if funding_needed > 0:
+                draw_factor = freeze_draw_factor if in_freeze else 1.0
+
+                draw_A = min((A_limit - A_bal) * draw_factor, funding_needed)
+                A_bal += draw_A
+                funding_needed -= draw_A
+
+                draw_B = min((B_limit - B_bal) * draw_factor, funding_needed)
+                B_bal += draw_B
+                funding_needed -= draw_B
+
+                draw_C = min((C_limit - C_bal) * draw_factor, funding_needed)
+                C_bal += draw_C
+                funding_needed -= draw_C
+
+            residual = max(outstanding - (A_bal + B_bal + C_bal), 0.0)
+            WH_bal = min(residual, wh_limit)
+            emergency_bal = max(residual - WH_bal, 0.0)
+            if emergency_bal > 0:
+                ever_emergency = 1
+            max_emergency = max(max_emergency, emergency_bal)
+
+        # asset interest (always on full outstanding until maturity)
+        interest_income = outstanding * coupon_m
+
+        # maturity event
+        is_maturity = (t == H - 1)
+        loss_t = 0.0
+        recovered_principal = 0.0
+        if is_maturity:
+            D = 1.0 if (rng.random() < p_default_term) else 0.0
+            loss_t = notional * D * lgd
+            recovered_principal = notional - loss_t
+            total_credit_loss += loss_t
+            outstanding = 0.0
+
+        # funding cost (stress spreads)
+        WH_rate_m = WH_rate_base_m + ((wh_spread_jump / 12.0) if in_freeze else 0.0)
+        emergency_rate_m = liquidity_shortfall_rate / 12.0
+
+        funding_cost = (
+            A_bal * A_rate_m +
+            B_bal * B_rate_m +
+            C_bal * C_rate_m +
+            WH_bal * WH_rate_m +
+            emergency_bal * emergency_rate_m
+        )
+        max_funding_cost = max(max_funding_cost, funding_cost)
+
+        emergency_cost = emergency_bal * emergency_rate_m
+        total_emergency_cost += emergency_cost
+
+        # net income (cashflow)
+        total_income += (interest_income - funding_cost - loss_t)
+
+        # maturity repayment waterfall (A->B->C->WH)
+        if is_maturity and recovered_principal > 0:
+            repay = recovered_principal
+
+            pay = min(A_bal, repay); A_bal -= pay; repay -= pay
+            pay = min(B_bal, repay); B_bal -= pay; repay -= pay
+            pay = min(C_bal, repay); C_bal -= pay; repay -= pay
+            pay = min(WH_bal, repay); WH_bal -= pay; repay -= pay
+
+        # diagnostics
+        sum_WH += WH_bal
+        max_WH = max(max_WH, WH_bal)
+
+    avg_WH = sum_WH / H if H > 0 else 0.0
+
+    return {
+        "total_net_income": float(total_income),
+        "default_rate": float(default_rate),
+        "lgd": float(lgd),
+        "margin_shock": float(margin_shock),
+        "freeze_months": int(freeze_months),
+        "max_WH_bal": float(max_WH),
+        "avg_WH_bal": float(avg_WH),
+        "max_emergency_bal": float(max_emergency),
+        "total_emergency_cost": float(total_emergency_cost),
+        "max_funding_cost": float(max_funding_cost),
+        "ever_emergency": int(ever_emergency),
+        "credit_loss": float(total_credit_loss),
+    }
+
+
+def run_mc(cfg):
+    rng = np.random.default_rng(cfg["seed"])
+    N = int(cfg["sim"]["N"])
+    out = []
+    for _ in range(N):
+        dr, lg, ms = _sample_params(rng, cfg)
+        out.append(_simulate_one_path(cfg, dr, lg, ms, rng))
+    return pd.DataFrame(out)

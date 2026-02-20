@@ -1,121 +1,170 @@
-# Monte Carlo Risk Engine (Python Upgrade of Excel Model)
+# Structural Stress Testing Framework for a Leveraged Lending Facility
 
-## 1. Project Objective
-This project upgrades the original Excel-based Monte Carlo model into a structured, modular, and interpretable Python risk engine.
+## Overview
 
-The goal is to:
-- Improve transparency of assumptions
-- Centralise model configuration
-- Enable scenario testing
-- Produce reproducible risk reports
-- Support future reuse by the company
+This repository contains a structural Monte Carlo framework designed to evaluate the capital resilience of a leveraged lending facility under correlated macroeconomic stress.
 
-This is not a full financial engineering rebuild, but a structured and explainable risk simulation framework.
+The model rebuilds a legacy deterministic Excel facility model into a distribution-based stress testing architecture.  
+The focus shifts from single-path cashflow sufficiency to systemic behaviour under joint credit and liquidity stress.
+
+The objective is not forecasting precision, but structural risk diagnosis.
 
 ---
 
-## 2. Model Structure
-The model is organised into logical layers:
+## Analytical Motivation
 
-### (1) Risk Engine Layer
-Generates stochastic risk drivers:
-- Annual default rate
+Leveraged facilities with bullet maturity structures exhibit non-linear downside behaviour when:
+
+- Default rates cluster under macro deterioration
+- Loss-given-default increases simultaneously
+- Refinancing conditions tighten
+- Market liquidity deteriorates
+
+This framework evaluates how these forces interact within a capital stack.
+
+Key question:
+
+How does correlated macro stress transmit through credit risk, refinancing risk, and tranche subordination?
+
+---
+
+## Structural Features
+
+### 1. Correlated Macro Driver
+
+A single systematic factor (Z ~ N(0,1)) drives:
+
+- Default rate
 - Loss given default (LGD)
-- Margin shock
-- Optional correlation structure
+- Refinancing failure probability
+- Liquidity haircut severity
 
-### (2) Cash Flow Layer
-Simulates:
-- Monthly interest income
-- Monthly default events
-- Recovery
-- Scheduled amortisation
-
-### (3) Tranche Allocation Layer
-Implements economic loss waterfall:
-C → B → A → Warehouse
-
-Outputs:
-- Total net income
-- Tranche losses
-- Probability of impairment
-
-### (4) Reporting Layer
-Automatically exports:
-- Distribution plots
-- Tail risk charts
-- Sensitivity analysis
-- CSV outputs for further analysis
+This introduces stress clustering rather than independent parameter variation.
 
 ---
 
-## 3. Key Assumptions
-All assumptions are configurable via `config.yaml`.
+### 2. Liquidity Freeze Regime
 
-Key parameters include:
-- Portfolio notional
-- Annual coupon rate
-- Simulation horizon
-- Number of Monte Carlo runs
-- Default base rate and bounds
-- LGD base and bounds
-- Margin shock range
-- Tranche structure limits
+A regime variable models temporary market dysfunction:
+
+- Stress-contingent activation
+- Markov persistence
+- Additive impact on refinancing probability
+- Amplified liquidation haircuts
+
+Liquidity risk is therefore regime-dependent rather than constant.
 
 ---
 
-## 4. How to Run
+### 3. Dual Loss Channels
 
-Install dependencies:
-pip install -r requirements.txt
+The framework decomposes downside risk into:
 
-Run simulation:
-python run.py
+• Credit Loss  
+  Borrower insolvency driven  
 
-Outputs will be saved to:
-outputs/<timestamp>/
+• Liquidity Loss  
+  Market access / refinancing failure driven  
 
----
-
-## 5. Outputs Generated
-For each run:
-- Expected Total Net Income
-- 5% Value-at-Risk
-- Probability of Loss
-- Tranche loss probabilities
-- Distribution plots (PNG)
-- Scenario comparison plots
-- CSV result file
+These channels are correlated but structurally distinct.
 
 ---
 
-## 6. Example Risk Insights
-The engine allows answering key decision questions:
-- Which variable drives losses most strongly?
-- Under what stress does the Senior tranche incur capital loss?
-- Is the loss distribution skewed?
-- How does risk change under higher default scenarios?
+### 4. Capital Structure Transmission
+
+Capital stack:
+
+- Senior (A)
+- Mezzanine (B)
+- Junior (C)
+- Warehouse bridge
+
+Loss waterfall:
+
+Equity → Junior → Mezzanine → Senior
+
+The model evaluates how macro-correlated stress propagates through this hierarchy.
 
 ---
 
-## 7. Why This Is an Upgrade (vs Excel)
-- Centralised assumptions (no hidden sheet logic)
-- Clear modular structure
-- Scenario flexibility
-- Automated reporting
-- Reproducible simulation runs
-- Easier future extension
+## Simulation Design
+
+Horizon: 60 months  
+Paths: 10,000  
+Structure: Bullet maturity  
+Portfolio: Construction + Bridging loans  
+
+Each simulation path includes:
+
+1. Correlated credit parameter realisation  
+2. Freeze regime activation  
+3. Refinancing assessment at maturity  
+4. Liquidity haircut conditional on failure  
+5. Monthly funding cost and tranche balance evolution  
+
+Outputs include:
+
+- Total Net Income distribution
+- Tranche-level loss allocation
+- Credit vs liquidity decomposition
+- Tail diagnostics (worst 5%)
 
 ---
 
-## 8. Future Extensions (Optional)
-- Full cash waterfall priority of payments
-- Dynamic interest rate modelling
-- More detailed amortisation structure
-- Excel front-end interface
-- Portfolio-level loan simulation
+## Key Structural Observations
+
+• Expected Net Income remains positive under base conditions  
+• Downside distribution exhibits left-skewed convexity  
+• Credit loss is the dominant driver in magnitude  
+• Liquidity loss activates disproportionately in severe tail states  
+• Senior tranches remain insulated unless extreme clustering occurs  
+
+The results suggest that tail amplification is structural and correlation-driven rather than idiosyncratic.
 
 ---
 
-## Author
-Developed as part of structured finance Monte Carlo upgrade project.
+## Risk & Policy Relevance
+
+The framework aligns with:
+
+- Macro-prudential stress testing logic  
+- Capital resilience diagnostics  
+- Liquidity regime analysis  
+- Structural transmission analysis across capital stacks  
+
+It complements deterministic facility models by explicitly modelling clustering, regime persistence, and refinancing cliffs.
+
+---
+
+## Limitations
+
+- Single systematic macro factor  
+- Linear parameter mapping with clipping  
+- Static portfolio composition  
+- Exogenous liquidity haircut  
+- Simplified refinancing mechanism  
+
+The model is intended for structural insight rather than market prediction.
+
+---
+
+## Repository Structure
+
+src/        Core simulation logic  
+run.py      Execution entry point  
+config.yaml Parameter configuration  
+outputs/    Simulation results  
+
+---
+
+## Author Focus
+
+This project demonstrates:
+
+- Structural risk modelling  
+- Distribution-based stress analysis  
+- Capital stack transmission mechanics  
+- Systemic downside interpretation  
+
+The emphasis is resilience analysis rather than optimisation or trading performance.
+
