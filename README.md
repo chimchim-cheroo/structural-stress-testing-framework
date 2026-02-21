@@ -11,6 +11,29 @@ The objective is not forecasting precision, but structural risk diagnosis.
 
 ---
 
+---
+
+## Interactive Visual Risk Dashboard
+
+An interactive Streamlit-based dashboard is included to visualise regime-dependent tail behaviour and capital structure transmission.
+
+Live App:
+https://chimchim-cheroo-structural-stress-testing-framework.streamlit.app
+
+The dashboard enables:
+
+- Freeze OFF vs ON regime comparison
+- Distribution overlay of Total Net Income
+- Tail decomposition (credit vs liquidity loss)
+- Worst-5% scenario exploration
+- Config-driven simulation reruns
+
+To run locally:
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+
 ## Analytical Motivation
 
 Leveraged facilities with bullet maturity structures exhibit non-linear downside behaviour when:
