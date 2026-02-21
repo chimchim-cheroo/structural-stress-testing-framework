@@ -20,6 +20,7 @@ The objective is structural risk diagnosis rather than point forecasting.
 
 ## Live Interactive Dashboard
 https://structural-stress-testing-framework-hkeqbytfdvfwd7rqgitweu.streamlit.app/
+
 The framework includes a Streamlit dashboard enabling:
 
 - Freeze OFF vs ON regime comparison
