@@ -1,38 +1,41 @@
-# Structural Stress Testing Framework for a Leveraged Lending Facility
+# Structural Stress Testing Framework  
+## Monte Carlo Risk Engine + Interactive Regime-Based Dashboard
+
+---
 
 ## Overview
 
 This repository contains a structural Monte Carlo framework designed to evaluate the capital resilience of a leveraged lending facility under correlated macroeconomic stress.
 
-The model rebuilds a legacy deterministic Excel facility model into a distribution-based stress testing architecture.  
-The focus shifts from single-path cashflow sufficiency to systemic behaviour under joint credit and liquidity stress.
+The project consists of:
 
-The objective is not forecasting precision, but structural risk diagnosis.
+- A distribution-based stress testing engine
+- A regime-dependent liquidity freeze model
+- A capital stack transmission framework
+- An interactive Streamlit visual risk dashboard
+
+The objective is structural risk diagnosis rather than point forecasting.
 
 ---
 
----
+## Live Interactive Dashboard
 
-## Interactive Visual Risk Dashboard
-
-An interactive Streamlit-based dashboard is included to visualise regime-dependent tail behaviour and capital structure transmission.
-
-Live App:
-https://chimchim-cheroo-structural-stress-testing-framework.streamlit.app
-
-The dashboard enables:
+The framework includes a Streamlit dashboard enabling:
 
 - Freeze OFF vs ON regime comparison
-- Distribution overlay of Total Net Income
-- Tail decomposition (credit vs liquidity loss)
-- Worst-5% scenario exploration
-- Config-driven simulation reruns
+- Distribution overlay visualisation
+- Tail (worst 5%) decomposition
+- Credit vs Liquidity loss breakdown
+- Scenario-level inspection (systemic shock diagnostics)
 
-To run locally:
+Run locally:
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
+```
+
+---
 
 ## Analytical Motivation
 
@@ -45,138 +48,133 @@ Leveraged facilities with bullet maturity structures exhibit non-linear downside
 
 This framework evaluates how these forces interact within a capital stack.
 
-Key question:
+Core question:
 
 How does correlated macro stress transmit through credit risk, refinancing risk, and tranche subordination?
 
 ---
 
-## Structural Features
+## Structural Architecture
 
-### 1. Correlated Macro Driver
+### 1. Correlated Systemic Driver
 
-A single systematic factor (Z ~ N(0,1)) drives:
+A single macro factor (Z ~ N(0,1)) drives:
 
 - Default rate
 - Loss given default (LGD)
+- Margin stress
 - Refinancing failure probability
 - Liquidity haircut severity
 
-This introduces stress clustering rather than independent parameter variation.
+This introduces stress clustering and tail convexity.
 
 ---
 
 ### 2. Liquidity Freeze Regime
 
-A regime variable models temporary market dysfunction:
+A Markov regime variable models temporary market dysfunction:
 
 - Stress-contingent activation
-- Markov persistence
-- Additive impact on refinancing probability
-- Amplified liquidation haircuts
+- Persistence dynamics
+- Conditional refinancing failure
+- Stress-amplified forced sale haircut
 
-Liquidity risk is therefore regime-dependent rather than constant.
+Liquidity risk is regime-dependent rather than static.
 
 ---
 
 ### 3. Dual Loss Channels
 
-The framework decomposes downside risk into:
+Downside risk is decomposed into:
 
 • Credit Loss  
-  Borrower insolvency driven  
+Borrower insolvency driven  
 
 • Liquidity Loss  
-  Market access / refinancing failure driven  
+Refinancing failure / market access driven  
 
 These channels are correlated but structurally distinct.
 
 ---
 
-### 4. Capital Structure Transmission
+### 4. Capital Stack Transmission
 
-Capital stack:
+Capital structure:
 
-- Senior (A)
-- Mezzanine (B)
-- Junior (C)
-- Warehouse bridge
+Senior → Mezzanine → Junior → Equity
 
 Loss waterfall:
 
-Equity → Junior → Mezzanine → Senior
+Equity absorbs first  
+Senior insulated unless extreme clustering occurs  
 
-The model evaluates how macro-correlated stress propagates through this hierarchy.
+The framework diagnoses capital buffer resilience under macro stress.
 
 ---
 
 ## Simulation Design
 
 Horizon: 60 months  
-Paths: 10,000  
+Paths: configurable (default 10,000)  
 Structure: Bullet maturity  
 Portfolio: Construction + Bridging loans  
 
-Each simulation path includes:
+Each path includes:
 
-1. Correlated credit parameter realisation  
-2. Freeze regime activation  
-3. Refinancing assessment at maturity  
-4. Liquidity haircut conditional on failure  
-5. Monthly funding cost and tranche balance evolution  
-
-Outputs include:
-
-- Total Net Income distribution
-- Tranche-level loss allocation
-- Credit vs liquidity decomposition
-- Tail diagnostics (worst 5%)
+1. Correlated macro parameter realisation  
+2. Freeze regime evolution  
+3. Credit realisation at maturity  
+4. Conditional refinancing failure  
+5. Liquidity haircut stress  
+6. Net income aggregation  
 
 ---
 
 ## Key Structural Observations
 
-• Expected Net Income remains positive under base conditions  
-• Downside distribution exhibits left-skewed convexity  
-• Credit loss is the dominant driver in magnitude  
-• Liquidity loss activates disproportionately in severe tail states  
-• Senior tranches remain insulated unless extreme clustering occurs  
+• Expected Net Income remains positive under base case  
+• Downside distribution exhibits left-skew convexity  
+• Credit loss dominates magnitude  
+• Liquidity loss activates disproportionately in tail states  
+• Tail amplification is regime-dependent and correlation-driven  
 
-The results suggest that tail amplification is structural and correlation-driven rather than idiosyncratic.
+The model highlights systemic clustering effects rather than idiosyncratic shocks.
 
 ---
 
 ## Risk & Policy Relevance
 
-The framework aligns with:
+This framework aligns with:
 
-- Macro-prudential stress testing logic  
-- Capital resilience diagnostics  
-- Liquidity regime analysis  
-- Structural transmission analysis across capital stacks  
+- Macro-prudential stress testing logic
+- Capital adequacy diagnostics
+- Liquidity regime analysis
+- Structural transmission modelling
 
-It complements deterministic facility models by explicitly modelling clustering, regime persistence, and refinancing cliffs.
-
----
-
-## Limitations
-
-- Single systematic macro factor  
-- Linear parameter mapping with clipping  
-- Static portfolio composition  
-- Exogenous liquidity haircut  
-- Simplified refinancing mechanism  
-
-The model is intended for structural insight rather than market prediction.
+It extends deterministic facility modelling into a distribution-based stress architecture.
 
 ---
 
 ## Repository Structure
 
-src/        Core simulation logic  
-run.py      Execution entry point  
-config.yaml Parameter configuration  
-outputs/    Simulation results  
+```
+src/                Core Monte Carlo engine
+app.py              Streamlit visual dashboard
+config.yaml         Parameter configuration
+requirements.txt    Dependencies
+```
+
+---
+
+## Limitations
+
+- Single macro factor
+- Linear shock mapping
+- Static portfolio composition
+- Simplified refinancing mechanism
+- Stylised liquidity haircut dynamics
+
+The framework is intended for structural insight, not predictive forecasting.
 
 ---
 
@@ -184,10 +182,10 @@ outputs/    Simulation results
 
 This project demonstrates:
 
-- Structural risk modelling  
-- Distribution-based stress analysis  
-- Capital stack transmission mechanics  
-- Systemic downside interpretation  
+- Structural risk modelling
+- Regime-dependent stress architecture
+- Distribution-based diagnostics
+- Tail decomposition analytics
+- Risk storytelling via interactive systems
 
-The emphasis is resilience analysis rather than optimisation or trading performance.
-
+Emphasis is placed on systemic resilience interpretation rather than trading optimisation.
